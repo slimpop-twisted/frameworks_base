@@ -36,6 +36,7 @@ import android.animation.TimeInterpolator;
 import android.annotation.NonNull;
 import android.app.ActivityManager;
 import android.app.ActivityManagerNative;
+import android.app.ActivityOptions;
 import android.app.IActivityManager;
 import android.app.Notification;
 import android.app.PendingIntent;
@@ -45,6 +46,8 @@ import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.content.res.Configuration;
 import android.content.res.Resources;
 import android.database.ContentObserver;
@@ -121,10 +124,12 @@ import com.android.internal.statusbar.StatusBarIcon;
 import com.android.keyguard.KeyguardHostView.OnDismissAction;
 import com.android.keyguard.ViewMediatorCallback;
 import com.android.systemui.BatteryMeterView;
+import com.android.systemui.BatteryLevelTextView;
 import com.android.systemui.DemoMode;
 import com.android.systemui.EventLogTags;
 import com.android.systemui.FontSizeUtils;
 import com.android.systemui.R;
+import com.android.systemui.recents.RecentsActivity;
 import com.android.systemui.doze.DozeHost;
 import com.android.systemui.doze.DozeLog;
 import com.android.systemui.keyguard.KeyguardViewMediator;
@@ -188,7 +193,7 @@ public class PhoneStatusBar extends BaseStatusBar implements DemoMode,
     static final String TAG = "PhoneStatusBar";
     public static final boolean DEBUG = BaseStatusBar.DEBUG;
     public static final boolean SPEW = false;
-    public static final boolean DUMPTRUCK = true; // extra dumpsys info
+    public static final boolean DUMPTRUCK = false; // extra dumpsys info
     public static final boolean DEBUG_GESTURES = false;
     public static final boolean DEBUG_MEDIA = false;
     public static final boolean DEBUG_MEDIA_FAKE_ARTWORK = false;
@@ -234,11 +239,11 @@ public class PhoneStatusBar extends BaseStatusBar implements DemoMode,
     private static final int BRIGHTNESS_CONTROL_LONG_PRESS_TIMEOUT = 750; // ms
     private static final int BRIGHTNESS_CONTROL_LINGER_THRESHOLD = 20;
 
-    public static final int FADE_KEYGUARD_START_DELAY = 100;
-    public static final int FADE_KEYGUARD_DURATION = 300;
+    public static final int FADE_KEYGUARD_START_DELAY = 50;
+    public static final int FADE_KEYGUARD_DURATION = 150;
 
     /** Allow some time inbetween the long press for back and recents. */
-    private static final int LOCK_TO_APP_GESTURE_TOLERENCE = 200;
+    private static final int LOCK_TO_APP_GESTURE_TOLERENCE = 100;
 
     PhoneStatusBarPolicy mIconPolicy;
 
@@ -812,6 +817,8 @@ public class PhoneStatusBar extends BaseStatusBar implements DemoMode,
             // no window manager? good luck with that
         }
 
+        RecentsActivity.setNavigationBarView(mNavigationBarView);
+
         // figure out which pixel-format to use for the status bar.
         mPixelFormat = PixelFormat.OPAQUE;
 
@@ -990,8 +997,8 @@ public class PhoneStatusBar extends BaseStatusBar implements DemoMode,
         if (mQSPanel != null) {
             final QSTileHost qsh = new QSTileHost(mContext, this,
                     mBluetoothController, mLocationController, mRotationLockController,
-                    mNetworkController, mZenModeController, mHotspotController,
-                    mCastController, mFlashlightController,
+                    mNetworkController, mZenModeController, mVolumeComponent,
+                    mHotspotController, mCastController, mFlashlightController,
                     mUserSwitcherController, mKeyguardMonitor,
                     mSecurityController);
             mQSPanel.setHost(qsh);
@@ -1015,6 +1022,8 @@ public class PhoneStatusBar extends BaseStatusBar implements DemoMode,
         mHeader.setBatteryController(mBatteryController);
         ((BatteryMeterView) mStatusBarView.findViewById(R.id.battery)).setBatteryController(
                 mBatteryController);
+        ((BatteryLevelTextView) mStatusBarView.findViewById(R.id.battery_level_text))
+                .setBatteryController(mBatteryController);
         mKeyguardStatusBar.setBatteryController(mBatteryController);
         mHeader.setNextAlarmController(mNextAlarmController);
 
@@ -1238,7 +1247,11 @@ public class PhoneStatusBar extends BaseStatusBar implements DemoMode,
     private View.OnClickListener mRecentsClickListener = new View.OnClickListener() {
         public void onClick(View v) {
             awakenDreams();
-            toggleRecentApps();
+            if(isRecentAppsVisible() && hasRecentApps() && clearAllRecentsNavbarEnabled()) {
+                clearRecentApps();
+            } else {
+                toggleRecentApps();
+            }
         }
     };
 
@@ -1798,7 +1811,7 @@ public class PhoneStatusBar extends BaseStatusBar implements DemoMode,
                 .alpha(makeVisible ? 1f : 0f)
                 //.setStartDelay(makeVisible ? 500 : 0)
                 //.setDuration(makeVisible ? 750 : 100)
-                .setDuration(150)
+                .setDuration(100)
                 .setListener(makeVisible ? null : new AnimatorListenerAdapter() {
                     @Override
                     public void onAnimationEnd(Animator animation) {
@@ -2059,7 +2072,7 @@ public class PhoneStatusBar extends BaseStatusBar implements DemoMode,
                                 + mBackdropBack.getDrawable());
                     }
                     mBackdropFront.animate()
-                            .setDuration(250)
+                            .setDuration(150)
                             .alpha(0f).withEndAction(mHideBackdropFront);
                 }
             }
@@ -2247,7 +2260,7 @@ public class PhoneStatusBar extends BaseStatusBar implements DemoMode,
         }
         v.animate()
                 .alpha(0f)
-                .setDuration(160)
+                .setDuration(100)
                 .setStartDelay(0)
                 .setInterpolator(ALPHA_OUT)
                 .withEndAction(new Runnable() {
@@ -2270,9 +2283,9 @@ public class PhoneStatusBar extends BaseStatusBar implements DemoMode,
         }
         v.animate()
                 .alpha(1f)
-                .setDuration(320)
+                .setDuration(250)
                 .setInterpolator(ALPHA_IN)
-                .setStartDelay(50)
+                .setStartDelay(15)
 
                 // We need to clean up any pending end action from animateStatusBarHide if we call
                 // both hide and show in the same frame before the animation actually gets started.
@@ -2527,8 +2540,8 @@ public class PhoneStatusBar extends BaseStatusBar implements DemoMode,
 
     final TimeInterpolator mAccelerateInterpolator = new AccelerateInterpolator();
     final TimeInterpolator mDecelerateInterpolator = new DecelerateInterpolator();
-    final int FLIP_DURATION_OUT = 125;
-    final int FLIP_DURATION_IN = 225;
+    final int FLIP_DURATION_OUT = 65;
+    final int FLIP_DURATION_IN = 125;
     final int FLIP_DURATION = (FLIP_DURATION_IN + FLIP_DURATION_OUT);
 
     Animator mScrollViewAnim, mClearButtonAnim;
@@ -2642,7 +2655,7 @@ public class PhoneStatusBar extends BaseStatusBar implements DemoMode,
                     AsyncTask.execute(new Runnable() {
                         @Override
                         public void run() {
-                            Settings.System.putFloatForUser(mContext.getContentResolver(),
+                            Settings.System.putIntForUser(mContext.getContentResolver(),
                                     Settings.System.SCREEN_BRIGHTNESS, val,
                                     UserHandle.USER_CURRENT);
                         }
@@ -3475,6 +3488,13 @@ public class PhoneStatusBar extends BaseStatusBar implements DemoMode,
         setControllerUsers();
     }
 
+    /** Check if Clear All Recents is enabled */
+    public boolean clearAllRecentsNavbarEnabled() {
+        return Settings.System.getInt(mContext.getContentResolver(),
+                Settings.System.CLEAR_ALL_RECENTS_NAVBAR_ENABLED, 1) != 0;
+    }
+
+
     private void setControllerUsers() {
         if (mZenModeController != null) {
             mZenModeController.setUserId(mCurrentUserId);
@@ -4283,6 +4303,7 @@ public class PhoneStatusBar extends BaseStatusBar implements DemoMode,
     private void handleLongPressBackRecents(View v) {
         try {
             boolean sendBackLongPress = false;
+            boolean hijackRecentsLongPress = false;
             IActivityManager activityManager = ActivityManagerNative.getDefault();
             boolean isAccessiblityEnabled = mAccessibilityManager.isEnabled();
             if (activityManager.isInLockTaskMode() && !isAccessiblityEnabled) {
@@ -4296,12 +4317,16 @@ public class PhoneStatusBar extends BaseStatusBar implements DemoMode,
                     // If we aren't pressing recents right now then they presses
                     // won't be together, so send the standard long-press action.
                     sendBackLongPress = true;
+                } else if ((v.getId() == R.id.recent_apps)) {
+                    hijackRecentsLongPress = true;
                 }
                 mLastLockToAppLongPress = time;
             } else {
                 // If this is back still need to handle sending the long-press event.
                 if (v.getId() == R.id.back) {
                     sendBackLongPress = true;
+                } else if (v.getId() == R.id.recent_apps) {
+                    hijackRecentsLongPress = true;
                 } else if (isAccessiblityEnabled && activityManager.isInLockTaskMode()) {
                     // When in accessibility mode a long press that is recents (not back)
                     // should stop lock task.
@@ -4313,9 +4338,42 @@ public class PhoneStatusBar extends BaseStatusBar implements DemoMode,
                 keyButtonView.sendEvent(KeyEvent.ACTION_DOWN, KeyEvent.FLAG_LONG_PRESS);
                 keyButtonView.sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_LONG_CLICKED);
             }
+            if (hijackRecentsLongPress) {
+                final ActivityManager am =
+                        (ActivityManager) mContext.getSystemService(Context.ACTIVITY_SERVICE);
+                ActivityManager.RunningTaskInfo lastTask = getLastTask(am);
+
+                if (lastTask != null) {
+                    if (DEBUG) Log.d(TAG, "switching to " + lastTask.topActivity.getPackageName());
+                    am.moveTaskToFront(lastTask.id, ActivityManager.MOVE_TASK_NO_USER_ACTION);
+                }
+            }
         } catch (RemoteException e) {
             Log.d(TAG, "Unable to reach activity manager", e);
         }
+    }
+
+    private ActivityManager.RunningTaskInfo getLastTask(final ActivityManager am) {
+        final String defaultHomePackage = resolveCurrentLauncherPackage();
+        List<ActivityManager.RunningTaskInfo> tasks = am.getRunningTasks(5);
+
+        for (int i = 1; i < tasks.size(); i++) {
+            String packageName = tasks.get(i).topActivity.getPackageName();
+            if (!packageName.equals(defaultHomePackage)
+                    && !packageName.equals(mContext.getPackageName())) {
+                return tasks.get(i);
+            }
+        }
+
+        return null;
+    }
+
+    private String resolveCurrentLauncherPackage() {
+        final Intent launcherIntent = new Intent(Intent.ACTION_MAIN)
+                .addCategory(Intent.CATEGORY_HOME);
+        final PackageManager pm = mContext.getPackageManager();
+        final ResolveInfo launcherInfo = pm.resolveActivity(launcherIntent, 0);
+        return launcherInfo.activityInfo.packageName;
     }
 
     // Recents
